@@ -140,7 +140,7 @@ In questo caso si tratterebbe, ad esempio, di una griglia larga 400 e alta 300 e
 ### Istanze di Emergenza
 
 ```c
-#define EMERGENCY_NAME_LENGTH 64
+# define  EMERGENCY_NAME_LENGTH  64
 
 typedef enum {
     WAITING,
@@ -159,9 +159,10 @@ typedef struct {
     time_t timestamp;
 } emergency_request_t;
 
-typedef struct {
+typedef struct emergency_t {
     emergency_type_t type;
     emergency_status_t status;
+
     int x;
     int y;
     time_t time;
