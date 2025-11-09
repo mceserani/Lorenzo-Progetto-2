@@ -1,39 +1,50 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "parse_env.h" 
+
+#include "parse_env.h"
 #include "parse_rescuers.h"
 #include "parse_emergency_types.h"
-#include "rescuers.h"
-#include "emergency_types.h"
+#include "config_validation.h"
+#include "src/runtime/context.h"
 
+int main(void) {
+    app_context_t context;
+    app_context_init(&context);
 
-int main() {  
-    rescuer_type_t* rescuer_types = NULL;
-    rescuer_digital_twin_t* rescuer_twins = NULL;
-    parse_rescuer_type("rescuers.txt", &rescuer_types, &rescuer_twins);
-    printf("Parsed Rescuer Types:\n");
-    for (size_t i = 0; rescuer_types && rescuer_types[i].rescuer_type_name; i++) {
-        printf("Rescuer Type: %s, Speed: %d, X: %d, Y: %d\n",
-               rescuer_types[i].rescuer_type_name,
-               rescuer_types[i].speed,
-               rescuer_types[i].x,
-               rescuer_types[i].y);
+    int status = parse_environment_variables("environment.txt", &context.environment);
+    if (status != 0) {
+        fprintf(stderr, "Failed to parse environment configuration.\n");
+        goto cleanup;
     }
-    printf("+\n");
-    emergency_type_t* emergency_types = NULL;
-    parse_emergency_type("emergency.txt", &emergency_types, rescuer_types); 
-    
-    printf("Parsed Emergency Types:\n");
-    for (size_t i = 0; emergency_types && emergency_types[i].emergency_name != NULL; i++) {
-        printf("Emergency Type: %s, Priority: %d\n",
-               emergency_types[i].emergency_name,
-               emergency_types[i].priority);
-        for (int j = 0; j < emergency_types[i].rescuers_req_number; j++) {
-            printf("  Rescuer Request: %s, Required Count: %d, Time to Manage: %d\n",
-                   emergency_types[i].rescuer_requests[j].type->rescuer_type_name,
-                   emergency_types[i].rescuer_requests[j].required_count,
-                   emergency_types[i].rescuer_requests[j].time_to_manage);
-        }
+
+    status = parse_rescuer_type("rescuers.txt",
+                                &context.rescuer_types,
+                                &context.rescuer_type_count,
+                                &context.rescuer_twins,
+                                &context.rescuer_twin_count);
+    if (status != 0) {
+        fprintf(stderr, "Failed to parse rescuer configuration.\n");
+        goto cleanup;
     }
-    return 0; 
+
+    status = parse_emergency_type("emergency.txt",
+                                   &context.emergency_types,
+                                   &context.emergency_type_count,
+                                   context.rescuer_types,
+                                   context.rescuer_type_count);
+    if (status != 0) {
+        fprintf(stderr, "Failed to parse emergency configuration.\n");
+        goto cleanup;
+    }
+
+    status = validate_configuration(&context);
+    if (status != 0) {
+        fprintf(stderr, "Configuration validation failed.\n");
+        goto cleanup;
+    }
+
+cleanup:
+    app_context_cleanup(&context);
+    return status == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
