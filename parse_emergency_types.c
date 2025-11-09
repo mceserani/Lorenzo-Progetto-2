@@ -1,10 +1,12 @@
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "emergency_types.h"
 #include "rescuers.h"
+#include "logging.h"
 
 static rescuer_type_t* find_rescuer_type_by_name(const char* name, rescuer_type_t* types_list) {
     if (!name || !types_list) return NULL;
@@ -31,8 +33,11 @@ int parse_emergency_type(const char* path,
     *out_emergency_types = NULL;
     *out_emergency_count = 0;
 
+    LOG_FILE_PARSING("EMERGENCY-PARSE-START", "Parsing emergency definitions from '%s'", path);
+
     FILE* file = fopen(path, "r");
     if (!file) {
+        LOG_FILE_PARSING("EMERGENCY-PARSE-OPEN-ERR", "Unable to open emergency file '%s': %s", path, strerror(errno));
         perror("Errore nell'apertura del file");
         return -1;
     }
@@ -54,6 +59,7 @@ int parse_emergency_type(const char* path,
         if (tok_name && tok_priority) {
             size_t* new_counts = realloc(request_counts_per_emergency, (emergency_count + 1) * sizeof(size_t));
             if (!new_counts) {
+                LOG_FILE_PARSING("EMERGENCY-PARSE-ALLOC-ERR", "Failed reallocating request counters for '%s'", path);
                 perror("Errore realloc contatori pass 1");
                 status = -1;
                 break;
@@ -82,6 +88,7 @@ int parse_emergency_type(const char* path,
     }
 
     if (status != 0) {
+        LOG_FILE_PARSING("EMERGENCY-PARSE-FAIL-PASS1", "Aborting emergency parsing for '%s' during counting phase", path);
         free(line);
         free(request_counts_per_emergency);
         fclose(file);
@@ -89,6 +96,7 @@ int parse_emergency_type(const char* path,
     }
 
     if (emergency_count == 0) {
+        LOG_FILE_PARSING("EMERGENCY-PARSE-EMPTY", "No emergency types defined in '%s'", path);
         free(line);
         free(request_counts_per_emergency);
         fclose(file);
@@ -97,6 +105,7 @@ int parse_emergency_type(const char* path,
 
     emergency_type_t* emergencies = calloc(emergency_count + 1, sizeof(emergency_type_t));
     if (!emergencies) {
+        LOG_FILE_PARSING("EMERGENCY-PARSE-EMERGENCY-ALLOC-ERR", "Failed allocating emergency definitions for '%s'", path);
         perror("Errore calloc emergency_types");
         free(line);
         free(request_counts_per_emergency);
@@ -118,6 +127,7 @@ int parse_emergency_type(const char* path,
 
             current_emergency->emergency_name = strdup(tok_name);
             if (!current_emergency->emergency_name) {
+                LOG_FILE_PARSING("EMERGENCY-PARSE-NAME-ALLOC-ERR", "Failed duplicating emergency name at index %zu from '%s'", current_emergency_idx, path);
                 status = -1;
                 break;
             }
@@ -129,6 +139,7 @@ int parse_emergency_type(const char* path,
             if (num_requests > 0) {
                 current_emergency->rescuer_requests = calloc(num_requests, sizeof(rescuer_request_t));
                 if (!current_emergency->rescuer_requests) {
+                    LOG_FILE_PARSING("EMERGENCY-PARSE-REQUEST-ALLOC-ERR", "Failed allocating rescuer requests for emergency '%s'", current_emergency->emergency_name);
                     perror("Errore calloc rescuer_requests");
                     status = -1;
                     break;
@@ -160,12 +171,15 @@ int parse_emergency_type(const char* path,
     fclose(file);
 
     if (status != 0) {
+        LOG_FILE_PARSING("EMERGENCY-PARSE-FAIL", "Aborting emergency parsing for '%s' due to previous errors", path);
         free_emergency_types(emergencies);
         return status;
     }
 
     *out_emergency_types = emergencies;
     *out_emergency_count = emergency_count;
+
+    LOG_FILE_PARSING("EMERGENCY-PARSE-SUCCESS", "Parsed %zu emergency types from '%s'", emergency_count, path);
 
     return 0;
 }

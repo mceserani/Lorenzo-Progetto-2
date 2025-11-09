@@ -2,9 +2,12 @@
 
 #include <stdio.h>
 
+#include "logging.h"
+
 static int validate_queue(const environment_variable_t* env) {
     if (!env->queue || env->queue[0] == '\0') {
         fprintf(stderr, "Invalid queue configuration: queue name is empty.\n");
+        LOG_CONFIGURATION("CFG-QUEUE-EMPTY", "Queue configuration is invalid: queue name is empty");
         return -1;
     }
 
@@ -14,6 +17,7 @@ static int validate_queue(const environment_variable_t* env) {
 static int validate_grid_size(const environment_variable_t* env) {
     if (env->height <= 0 || env->width <= 0) {
         fprintf(stderr, "Invalid grid size: height and width must be positive.\n");
+        LOG_CONFIGURATION("CFG-GRID-INVALID", "Invalid grid size height=%d width=%d", env->height, env->width);
         return -1;
     }
 
@@ -25,6 +29,7 @@ static int validate_rescuer_positions(const app_context_t* ctx) {
         const rescuer_type_t* type = &ctx->rescuer_types[i];
         if (type->x < 0 || type->y < 0 || type->x >= ctx->environment.width || type->y >= ctx->environment.height) {
             fprintf(stderr, "Rescuer type '%s' position is outside the grid.\n", type->rescuer_type_name);
+            LOG_CONFIGURATION("CFG-RESCUER-OOB", "Rescuer type '%s' position (%d,%d) outside grid %dx%d", type->rescuer_type_name, type->x, type->y, ctx->environment.width, ctx->environment.height);
             return -1;
         }
     }
@@ -39,6 +44,7 @@ static int validate_emergency_rescuer_links(const app_context_t* ctx) {
             const rescuer_request_t* request = &emergency->rescuer_requests[j];
             if (!request->type) {
                 fprintf(stderr, "Emergency '%s' references an unknown rescuer type.\n", emergency->emergency_name);
+                LOG_CONFIGURATION("CFG-UNKNOWN-RESCUER", "Emergency '%s' references an unknown rescuer type", emergency->emergency_name);
                 return -1;
             }
         }

@@ -1,10 +1,12 @@
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "emergency_types.h"
 #include "rescuers.h"
+#include "logging.h"
 
 int parse_rescuer_type(const char* path,
                        rescuer_type_t** rescuer_types,
@@ -20,8 +22,11 @@ int parse_rescuer_type(const char* path,
     *out_rescuer_twins = NULL;
     *out_rescuer_twin_count = 0;
 
+    LOG_FILE_PARSING("RESCUER-PARSE-START", "Parsing rescuer types from '%s'", path);
+
     FILE* file = fopen(path, "r");
     if (!file) {
+        LOG_FILE_PARSING("RESCUER-PARSE-OPEN-ERR", "Unable to open rescuer file '%s': %s", path, strerror(errno));
         perror("Errore nell'apertura del file");
         return -1;
     }
@@ -48,6 +53,7 @@ int parse_rescuer_type(const char* path,
     }
 
     if (type_count == 0) {
+        LOG_FILE_PARSING("RESCUER-PARSE-EMPTY", "No rescuer types defined in '%s'", path);
         free(line);
         fclose(file);
         return 0;
@@ -55,6 +61,7 @@ int parse_rescuer_type(const char* path,
 
     rescuer_type_t* types = calloc(type_count + 1, sizeof(rescuer_type_t));
     if (!types) {
+        LOG_FILE_PARSING("RESCUER-PARSE-ALLOC-ERR", "Failed allocating rescuer types for '%s'", path);
         perror("Errore di allocazione (pass 2) per rescuer_types");
         free(line);
         fclose(file);
@@ -63,6 +70,7 @@ int parse_rescuer_type(const char* path,
 
     rescuer_digital_twin_t* twins = calloc(total_twin_count, sizeof(rescuer_digital_twin_t));
     if (!twins) {
+        LOG_FILE_PARSING("RESCUER-PARSE-TWIN-ALLOC-ERR", "Failed allocating rescuer twins while parsing '%s'", path);
         perror("Errore di allocazione (pass 2) per out_rescuer_twins");
         free(types);
         free(line);
@@ -88,6 +96,7 @@ int parse_rescuer_type(const char* path,
             rescuer_type_t* current_type_ptr = &types[current_type_idx];
             current_type_ptr->rescuer_type_name = strdup(tok_name);
             if (!current_type_ptr->rescuer_type_name) {
+                LOG_FILE_PARSING("RESCUER-PARSE-NAME-ALLOC-ERR", "Failed duplicating rescuer type name at index %zu from '%s'", current_type_idx, path);
                 status = -1;
                 break;
             }
@@ -114,6 +123,7 @@ int parse_rescuer_type(const char* path,
     fclose(file);
 
     if (status != 0) {
+        LOG_FILE_PARSING("RESCUER-PARSE-FAIL", "Aborting rescuer parsing for '%s' due to previous errors", path);
         free_rescuer_types(types);
         free_rescuer_twins(twins);
         return status;
@@ -123,6 +133,8 @@ int parse_rescuer_type(const char* path,
     *out_rescuer_twins = twins;
     *out_rescuer_type_count = type_count;
     *out_rescuer_twin_count = total_twin_count;
+
+    LOG_FILE_PARSING("RESCUER-PARSE-SUCCESS", "Parsed %zu rescuer types and %zu digital twins from '%s'", type_count, total_twin_count, path);
 
     return 0;
 }

@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 #include "parse_env.h"
+#include "logging.h"
 
 int parse_environment_variables(const char* path, environment_variable_t* env_vars) {
     if (!env_vars || !path) {
@@ -15,8 +17,11 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
     free(env_vars->queue);
     env_vars->queue = NULL;
 
+    LOG_FILE_PARSING("ENV-PARSE-START", "Parsing environment file '%s'", path);
+
     FILE* file = fopen(path, "r");
     if (!file) {
+        LOG_FILE_PARSING("ENV-PARSE-OPEN-ERR", "Unable to open environment file '%s': %s", path, strerror(errno));
         perror("Errore nell'apertura del file");
         return -1;
     }
@@ -35,6 +40,7 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
             if (strcmp(tok_key, "queue") == 0) {
                 char* dup = strdup(tok_value);
                 if (!dup) {
+                    LOG_FILE_PARSING("ENV-PARSE-ALLOC-ERR", "Failed to duplicate queue name while parsing '%s'", path);
                     result = -1;
                     break;
                 }
@@ -52,7 +58,10 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
     fclose(file);
 
     if (!env_vars->queue) {
+        LOG_FILE_PARSING("ENV-PARSE-MISSING-QUEUE", "Missing queue entry in environment file '%s'", path);
         result = -1;
+    } else if (result == 0) {
+        LOG_FILE_PARSING("ENV-PARSE-SUCCESS", "Parsed environment queue='%s' height=%d width=%d", env_vars->queue, env_vars->height, env_vars->width);
     }
 
     return result;
