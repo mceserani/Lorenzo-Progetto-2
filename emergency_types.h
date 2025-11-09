@@ -3,7 +3,6 @@
 #include "rescuers.h"
 
 
-
 typedef struct rescuer_request_t {
     rescuer_type_t* type;
     int required_count;
@@ -16,3 +15,6 @@ typedef struct emergency_type_t  {
     rescuer_request_t* rescuer_requests;
     int rescuers_req_number;
 } emergency_type_t;
+
+void free_emergency_types(emergency_type_t* emergency_types);
+
