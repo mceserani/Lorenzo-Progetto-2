@@ -143,17 +143,16 @@ In questo caso si tratterebbe, ad esempio, di una griglia larga 400 e alta 300 e
 #define EMERGENCY_NAME_LENGTH 64
 
 typedef enum {
-    EMERGENCY_WAITING,
-    EMERGENCY_ASSIGNED,
-    EMERGENCY_IN_PROGRESS,
-    EMERGENCY_PAUSED,
-    EMERGENCY_COMPLETED,
-    EMERGENCY_CANCELED,
-    EMERGENCY_TIMEOUT
+    WAITING,
+    ASSIGNED,
+    IN_PROGRESS,
+    PAUSED,
+    COMPLETED,
+    CANCELED,
+    TIMEOUT
 } emergency_status_t;
 
 typedef struct {
-    char emergency_type[EMERGENCY_NAME_LENGTH];
     char emergency_name[EMERGENCY_NAME_LENGTH];
     int x;
     int y;
@@ -161,7 +160,7 @@ typedef struct {
 } emergency_request_t;
 
 typedef struct {
-    const emergency_type_t *type;
+    emergency_type_t type;
     emergency_status_t status;
     char emergency_name[EMERGENCY_NAME_LENGTH];
     int x;
