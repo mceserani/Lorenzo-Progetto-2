@@ -5,7 +5,9 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <time.h>
 
+#include "emergency_types.h"
 #include "emergency.h"
 #include "parse_env.h"
 

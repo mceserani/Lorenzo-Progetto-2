@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include "logging.h"
-#include "emergency_types.h"
 
 #ifndef MQ_BACKPRESSURE_SLEEP_MS
 #define MQ_BACKPRESSURE_SLEEP_MS 200
@@ -67,21 +66,6 @@ static char* trim_whitespace(char* str) {
     return str;
 }
 
-static const emergency_type_t* mq_consumer_find_type(const mq_consumer_t* consumer, const char* type_name) {
-    if (!consumer || !consumer->emergency_types || consumer->emergency_type_count == 0 || !type_name) {
-        return NULL;
-    }
-
-    for (size_t i = 0; i < consumer->emergency_type_count; ++i) {
-        const emergency_type_t* type = &consumer->emergency_types[i];
-        if (type && type->emergency_name && strcmp(type->emergency_name, type_name) == 0) {
-            return type;
-        }
-    }
-
-    return NULL;
-}
-
 static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* message, emergency_request_t* out_request) {
     if (!consumer || !message || !out_request) {
         return false;
@@ -98,44 +82,22 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     memcpy(buffer, message, copy_len + 1);
 
     char* saveptr = NULL;
-    char* raw_type = strtok_r(buffer, ";", &saveptr);
-    char* raw_name = strtok_r(NULL, ";", &saveptr);
+    char* raw_name = strtok_r(buffer, ";", &saveptr);
     char* raw_x = strtok_r(NULL, ";", &saveptr);
     char* raw_y = strtok_r(NULL, ";", &saveptr);
     char* raw_ts = strtok_r(NULL, ";", &saveptr);
     char* extra = strtok_r(NULL, ";", &saveptr);
 
-    if (!raw_type || !raw_name || !raw_x || !raw_y || !raw_ts || extra) {
+    if (!raw_name || !raw_x || !raw_y || !raw_ts || extra) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid message format: '%s'", message);
         mq_consumer_apply_backpressure(consumer, "invalid format");
         return false;
     }
 
-    char* type_name = trim_whitespace(raw_type);
     char* name = trim_whitespace(raw_name);
     char* x_str = trim_whitespace(raw_x);
     char* y_str = trim_whitespace(raw_y);
     char* ts_str = trim_whitespace(raw_ts);
-
-    size_t type_len = strlen(type_name);
-    if (type_len == 0 || type_len >= EMERGENCY_NAME_LENGTH) {
-        LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid emergency type '%s'", type_name);
-        mq_consumer_apply_backpressure(consumer, "invalid type name");
-        return false;
-    }
-
-    if (!consumer->emergency_types || consumer->emergency_type_count == 0) {
-        LOG_MESSAGE_QUEUE("MQ-INVALID", "No emergency types configured to validate '%s'", type_name);
-        mq_consumer_apply_backpressure(consumer, "missing type configuration");
-        return false;
-    }
-
-    const emergency_type_t* type = mq_consumer_find_type(consumer, type_name);
-    if (!type) {
-        LOG_MESSAGE_QUEUE("MQ-INVALID", "Unknown emergency type '%s'", type_name);
-        mq_consumer_apply_backpressure(consumer, "unknown type");
-        return false;
-    }
 
     size_t name_len = strlen(name);
     if (name_len == 0 || name_len >= EMERGENCY_NAME_LENGTH) {
@@ -189,7 +151,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     }
 
     memset(out_request, 0, sizeof(*out_request));
-    strncpy(out_request->emergency_type, type_name, sizeof(out_request->emergency_type) - 1);
     strncpy(out_request->emergency_name, name, sizeof(out_request->emergency_name) - 1);
     out_request->x = (int)x_val;
     out_request->y = (int)y_val;
@@ -237,9 +198,8 @@ static void* mq_consumer_thread(void* arg) {
         if (mq_consumer_parse_message(consumer, buffer, &request)) {
             LOG_MESSAGE_QUEUE(
                 "MQ-EMERGENCY",
-                "Emergency '%s' (type='%s') received at (%d,%d) timestamp=%ld",
+                "Emergency '%s' received at (%d,%d) timestamp=%ld",
                 request.emergency_name,
-                request.emergency_type,
                 request.x,
                 request.y,
                 (long)request.timestamp);
