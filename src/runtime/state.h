@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <time.h>
 
@@ -14,18 +15,24 @@ typedef struct emergency_record_t {
     int min_distance;
     int* assigned_indices;
     size_t assigned_count;
+
+    unsigned int manage_time_total;
+    unsigned int manage_time_remaining;
+
+    bool preempted;
 } emergency_record_t;
 
 typedef struct runtime_state_t {
     pthread_mutex_t mutex;
     pthread_cond_t emergency_available_cond;
     pthread_cond_t rescuer_available_cond;
+    pthread_cond_t progress_cond;
 
-    emergency_record_t* waiting_queue;
+    emergency_record_t** waiting_queue;
     size_t waiting_count;
     size_t waiting_capacity;
 
-    emergency_record_t* active_emergencies;
+    emergency_record_t** active_emergencies;
     size_t active_count;
     size_t active_capacity;
 
