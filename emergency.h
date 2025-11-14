@@ -20,6 +20,7 @@ typedef struct {
 typedef struct emergency_t {
     emergency_type_t type; 
     emergency_status_t status;
+
     int x;
     int y;
     time_t time; 

@@ -13,38 +13,6 @@
 
 #include "logging.h"
 
-#ifndef MQ_BACKPRESSURE_SLEEP_MS
-#define MQ_BACKPRESSURE_SLEEP_MS 200
-#endif
-
-static void mq_consumer_apply_backpressure(mq_consumer_t* consumer, const char* reason) {
-    if (!consumer) {
-        return;
-    }
-
-    struct mq_attr attr;
-    if (consumer->queue != (mqd_t)-1 && mq_getattr(consumer->queue, &attr) == 0) {
-        LOG_MESSAGE_QUEUE(
-            "MQ-BACKPRESSURE",
-            "Applying back-pressure (%s). queue_len=%ld capacity=%ld",
-            reason ? reason : "unspecified",
-            attr.mq_curmsgs,
-            attr.mq_maxmsg);
-    } else {
-        LOG_MESSAGE_QUEUE(
-            "MQ-BACKPRESSURE",
-            "Applying back-pressure (%s). Unable to query queue attributes: %s",
-            reason ? reason : "unspecified",
-            strerror(errno));
-    }
-
-    struct timespec ts = {
-        .tv_sec = MQ_BACKPRESSURE_SLEEP_MS / 1000,
-        .tv_nsec = (MQ_BACKPRESSURE_SLEEP_MS % 1000) * 1000000L,
-    };
-    nanosleep(&ts, NULL);
-}
-
 static char* trim_whitespace(char* str) {
     if (!str) {
         return str;
@@ -75,7 +43,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     size_t copy_len = strlen(message);
     if (copy_len >= sizeof(buffer)) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Received message too large (%zu bytes)", copy_len);
-        mq_consumer_apply_backpressure(consumer, "oversized message");
         return false;
     }
 
@@ -90,7 +57,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
 
     if (!raw_name || !raw_x || !raw_y || !raw_ts || extra) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid message format: '%s'", message);
-        mq_consumer_apply_backpressure(consumer, "invalid format");
         return false;
     }
 
@@ -102,7 +68,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     size_t name_len = strlen(name);
     if (name_len == 0 || name_len >= EMERGENCY_NAME_LENGTH) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid emergency name '%s'", name);
-        mq_consumer_apply_backpressure(consumer, "invalid name");
         return false;
     }
 
@@ -111,7 +76,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     long x_val = strtol(x_str, &endptr, 10);
     if (errno != 0 || !endptr || *endptr != '\0') {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid X coordinate '%s'", x_str);
-        mq_consumer_apply_backpressure(consumer, "invalid coordinate");
         return false;
     }
 
@@ -119,7 +83,6 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     long y_val = strtol(y_str, &endptr, 10);
     if (errno != 0 || !endptr || *endptr != '\0') {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid Y coordinate '%s'", y_str);
-        mq_consumer_apply_backpressure(consumer, "invalid coordinate");
         return false;
     }
 
@@ -127,26 +90,22 @@ static bool mq_consumer_parse_message(mq_consumer_t* consumer, const char* messa
     long long ts_val = strtoll(ts_str, &endptr, 10);
     if (errno != 0 || !endptr || *endptr != '\0') {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Invalid timestamp '%s'", ts_str);
-        mq_consumer_apply_backpressure(consumer, "invalid timestamp");
         return false;
     }
 
     if (x_val < 0 || (consumer->grid_width > 0 && x_val >= consumer->grid_width)) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "X coordinate out of bounds: %ld", x_val);
-        mq_consumer_apply_backpressure(consumer, "coordinate out of bounds");
         return false;
     }
 
     if (y_val < 0 || (consumer->grid_height > 0 && y_val >= consumer->grid_height)) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Y coordinate out of bounds: %ld", y_val);
-        mq_consumer_apply_backpressure(consumer, "coordinate out of bounds");
         return false;
     }
 
     time_t now = time(NULL);
     if (ts_val <= 0 || (now != (time_t)-1 && ts_val > (long long)(now + 60))) {
         LOG_MESSAGE_QUEUE("MQ-INVALID", "Timestamp not acceptable: %lld", ts_val);
-        mq_consumer_apply_backpressure(consumer, "invalid timestamp");
         return false;
     }
 
@@ -188,7 +147,6 @@ static void* mq_consumer_thread(void* arg) {
             }
 
             LOG_MESSAGE_QUEUE("MQ-RECEIVE-ERR", "mq_receive failed: %s", strerror(errno));
-            mq_consumer_apply_backpressure(consumer, "receive error");
             continue;
         }
 
