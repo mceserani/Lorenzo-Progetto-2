@@ -10,6 +10,7 @@
 #include "emergency_types.h"
 #include "emergency.h"
 #include "parse_env.h"
+#include "src/runtime/state.h"
 
 #ifndef MQ_CONSUMER_MAX_QUEUE_NAME
 #define MQ_CONSUMER_MAX_QUEUE_NAME 255
@@ -34,11 +35,13 @@ typedef struct mq_consumer_t {
     bool thread_created;
     const struct emergency_type_t* emergency_types;
     size_t emergency_type_count;
+    runtime_state_t* runtime_state;
 } mq_consumer_t;
 
 void mq_consumer_init(mq_consumer_t* consumer);
 int mq_consumer_start(mq_consumer_t* consumer,
                       const environment_variable_t* environment,
+                      runtime_state_t* runtime_state,
                       const struct emergency_type_t* emergency_types,
                       size_t emergency_type_count);
 void mq_consumer_request_stop(mq_consumer_t* consumer);

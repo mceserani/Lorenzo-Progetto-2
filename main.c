@@ -13,6 +13,7 @@
 #include "parse_emergency_types.h"
 #include "config_validation.h"
 #include "src/runtime/context.h"
+#include "src/runtime/state.h"
 #include "logging.h"
 #include "mq_consumer.h"
 
@@ -31,6 +32,9 @@ int main(void) {
     mq_consumer_t consumer;
     mq_consumer_init(&consumer);
     bool consumer_started = false;
+    runtime_state_t runtime_state;
+    bool runtime_initialized = false;
+    bool workers_started = false;
 
     if (log_init(NULL) != 0) {
         fprintf(stderr, "Failed to initialize logging.\n");
@@ -76,6 +80,22 @@ int main(void) {
 
     LOG_SYSTEM("SYS-READY", "Configuration parsed and validated successfully");
 
+    if (runtime_state_init(&runtime_state, context.rescuer_twins, context.rescuer_twin_count) != 0) {
+        fprintf(stderr, "Failed to initialize runtime state.\n");
+        LOG_SYSTEM("SYS-ERROR", "Runtime state initialization failed");
+        status = -1;
+        goto cleanup;
+    }
+    runtime_initialized = true;
+
+    if (runtime_state_start_workers(&runtime_state, 0) != 0) {
+        fprintf(stderr, "Failed to start runtime workers.\n");
+        LOG_SYSTEM("SYS-ERROR", "Runtime worker startup failed");
+        status = -1;
+        goto cleanup;
+    }
+    workers_started = true;
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_shutdown_signal;
@@ -90,6 +110,7 @@ int main(void) {
 
     if (mq_consumer_start(&consumer,
                           &context.environment,
+                          &runtime_state,
                           context.emergency_types,
                           context.emergency_type_count) != 0) {
         LOG_SYSTEM("SYS-ERROR", "Unable to start message queue consumer");
@@ -112,6 +133,17 @@ cleanup:
     if (consumer_started) {
         mq_consumer_shutdown(&consumer);
         consumer_started = false;
+    }
+
+    if (workers_started) {
+        runtime_state_request_shutdown(&runtime_state);
+        runtime_state_join_workers(&runtime_state);
+        workers_started = false;
+    }
+
+    if (runtime_initialized) {
+        runtime_state_destroy(&runtime_state);
+        runtime_initialized = false;
     }
 
     if (status != 0) {
