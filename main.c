@@ -1,5 +1,12 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "parse_env.h"
 #include "parse_rescuers.h"
@@ -7,10 +14,23 @@
 #include "config_validation.h"
 #include "src/runtime/context.h"
 #include "logging.h"
+#include "mq_consumer.h"
+
+static volatile sig_atomic_t g_shutdown_requested = 0;
+static volatile sig_atomic_t g_shutdown_signal = 0;
+
+static void handle_shutdown_signal(int signo) {
+    g_shutdown_signal = signo;
+    g_shutdown_requested = 1;
+}
 
 int main(void) {
     app_context_t context;
     app_context_init(&context);
+
+    mq_consumer_t consumer;
+    mq_consumer_init(&consumer);
+    bool consumer_started = false;
 
     if (log_init(NULL) != 0) {
         fprintf(stderr, "Failed to initialize logging.\n");
@@ -56,7 +76,44 @@ int main(void) {
 
     LOG_SYSTEM("SYS-READY", "Configuration parsed and validated successfully");
 
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_shutdown_signal;
+    sigemptyset(&sa.sa_mask);
+
+    if (sigaction(SIGINT, &sa, NULL) != 0 || sigaction(SIGTERM, &sa, NULL) != 0) {
+        LOG_SYSTEM("SYS-SIGNAL-ERR", "Failed to configure signal handlers: %s", strerror(errno));
+        fprintf(stderr, "Failed to configure signal handlers.\n");
+        status = -1;
+        goto cleanup;
+    }
+
+    if (mq_consumer_start(&consumer,
+                          &context.environment,
+                          context.emergency_types,
+                          context.emergency_type_count) != 0) {
+        LOG_SYSTEM("SYS-ERROR", "Unable to start message queue consumer");
+        status = -1;
+        goto cleanup;
+    }
+    consumer_started = true;
+
+    LOG_SYSTEM("SYS-WAIT", "Waiting for shutdown signal (PID=%d)", getpid());
+
+    while (!g_shutdown_requested) {
+        pause();
+    }
+
+    if (g_shutdown_signal != 0) {
+        LOG_SYSTEM("SYS-SIGNAL", "Received signal %d, shutting down", g_shutdown_signal);
+    }
+
 cleanup:
+    if (consumer_started) {
+        mq_consumer_shutdown(&consumer);
+        consumer_started = false;
+    }
+
     if (status != 0) {
         LOG_SYSTEM("SYS-SHUTDOWN-ERROR", "Shutting down with errors (status=%d)", status);
     } else {
