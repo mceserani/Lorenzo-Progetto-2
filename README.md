@@ -165,7 +165,7 @@ typedef struct emergency_t {
 
     int x;
     int y;
-    time_t time;
+    time_t timestamp;
     int rescuer_count;
     rescuer_digital_twin_t *rescuers_dt;
 } emergency_t;
