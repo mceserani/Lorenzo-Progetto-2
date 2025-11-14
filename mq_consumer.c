@@ -161,6 +161,17 @@ static void* mq_consumer_thread(void* arg) {
                 request.x,
                 request.y,
                 (long)request.timestamp);
+
+            if (consumer->runtime_state) {
+                if (runtime_state_dispatch_request(consumer->runtime_state,
+                                                   &request,
+                                                   consumer->emergency_types,
+                                                   consumer->emergency_type_count) != 0) {
+                    LOG_EMERGENCY_STATUS("RT-DISPATCH-FAIL",
+                                         "Failed to enqueue emergency '%s'",
+                                         request.emergency_name);
+                }
+            }
         }
     }
 
@@ -183,10 +194,12 @@ void mq_consumer_init(mq_consumer_t* consumer) {
     consumer->thread_created = false;
     consumer->emergency_types = NULL;
     consumer->emergency_type_count = 0;
+    consumer->runtime_state = NULL;
 }
 
 int mq_consumer_start(mq_consumer_t* consumer,
                       const environment_variable_t* environment,
+                      runtime_state_t* runtime_state,
                       const emergency_type_t* emergency_types,
                       size_t emergency_type_count) {
     if (!consumer || !environment || !environment->queue) {
@@ -197,12 +210,17 @@ int mq_consumer_start(mq_consumer_t* consumer,
         return -1;
     }
 
+    if (!runtime_state) {
+        return -1;
+    }
+
     mq_consumer_init(consumer);
 
     consumer->grid_width = environment->width;
     consumer->grid_height = environment->height;
     consumer->emergency_types = emergency_types;
     consumer->emergency_type_count = emergency_type_count;
+    consumer->runtime_state = runtime_state;
 
     const char* queue_name = environment->queue;
     if (queue_name[0] == '/') {
@@ -297,5 +315,6 @@ void mq_consumer_shutdown(mq_consumer_t* consumer) {
     consumer->queue_name[0] = '\0';
     consumer->emergency_types = NULL;
     consumer->emergency_type_count = 0;
+    consumer->runtime_state = NULL;
 }
 

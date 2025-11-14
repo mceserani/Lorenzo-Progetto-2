@@ -1,3 +1,10 @@
+#pragma once
+
+#include <time.h>
+
+#include "emergency_types.h"
+#include "rescuers.h"
+
 #define EMERGENCY_NAME_LENGTH 64
 
 typedef enum {
@@ -18,12 +25,13 @@ typedef struct {
 } emergency_request_t;
 
 typedef struct emergency_t {
-    emergency_type_t type; 
+    char name[EMERGENCY_NAME_LENGTH];
+    emergency_type_t type;
     emergency_status_t status;
 
     int x;
     int y;
-    time_t time; 
+    time_t time;
     int rescuer_count;
     rescuer_digital_twin_t* rescuers_dt;
 } emergency_t;
