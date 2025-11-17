@@ -112,6 +112,7 @@ int parse_rescuer_type(const char* path,
                 current_twin_ptr->y = current_type_ptr->y;
                 current_twin_ptr->status = IDLE;
                 current_twin_ptr->type = current_type_ptr;
+                current_twin_ptr->return_available_at = 0;
                 current_twin_idx++;
             }
 

@@ -80,7 +80,10 @@ int main(void) {
 
     LOG_SYSTEM("SYS-READY", "Configuration parsed and validated successfully");
 
-    if (runtime_state_init(&runtime_state, context.rescuer_twins, context.rescuer_twin_count) != 0) {
+    if (runtime_state_init(&runtime_state,
+                           context.rescuer_twins,
+                           context.rescuer_twin_count,
+                           &context.environment) != 0) {
         fprintf(stderr, "Failed to initialize runtime state.\n");
         LOG_SYSTEM("SYS-ERROR", "Runtime state initialization failed");
         status = -1;

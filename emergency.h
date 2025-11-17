@@ -32,6 +32,10 @@ typedef struct emergency_t {
     int x;
     int y;
     time_t time;
+    time_t timer_started_at;
+    time_t deadline;
+    unsigned int elapsed_timer_seconds;
+    short dynamic_priority;
     int rescuer_count;
     rescuer_digital_twin_t* rescuers_dt;
 } emergency_t;
