@@ -23,6 +23,13 @@ L’obiettivo del sistema è di assegnare i soccorritori appropriati a ciascuna 
 I tipi di emergenze e i soccorritori disponibili sono delineati tramite file di configurazione specifici: `rescuers.conf` e `emergency_types.conf`.
 
 La dimensione dell’ambiente è definita in un terzo file di configurazione, `env.conf`.
+Oltre alle dimensioni e al nome della message queue, il file supporta anche le seguenti chiavi opzionali per la gestione delle
+scadenze e dell'aging:
+
+* `priority0_timeout`, `priority1_timeout`, `priority2_timeout`: tempo massimo (in secondi) che un'emergenza di quella
+  priorità può trascorrere negli stati `WAITING`/`PAUSED` prima di essere marcata come `TIMEOUT`.
+* `aging_start` e `aging_step`: soglie temporali (in secondi) che definiscono quando le emergenze a bassa priorità iniziano a
+  ricevere incrementi dinamici di priorità (fino alla priorità media) per evitare starvation.
 
 Si può assumere che il contenuto di questi file non cambi e richieda di essere letto solo durante l’avvio del programma.
 
@@ -190,6 +197,144 @@ Ogni modifica dello stato di un’emergenza o di un mezzo di soccorso deve esser
 Per stimare il tempo di arrivo di un soccorritore:
 
 $$d((x_1, y_1), (x_2, y_2)) = |x_1 - x_2| + |y_1 - y_2|$$
+
+### Pseudocodice del runtime
+
+La seguente sezione descrive ad alto livello ciò che accade nel ciclo dei worker e nelle funzioni di supporto richiamate dal thread. Tutte le routine sono pensate per essere eseguite con il `mutex` del runtime già acquisito (quando indicato nel nome `*_locked`).
+
+#### `runtime_worker_thread`
+
+```
+loop finché non viene richiesto lo shutdown:
+    attendi un'emergenza disponibile (condizione o shutdown)
+    record ← waiting_queue_pop_front_locked()
+    se record è nullo → riprendi il loop
+
+    azzera flag di preemption
+    se !try_allocate_rescuers_locked(record) e !attempt_preemption_locked(record):
+        reinserisci record con waiting_queue_insert_locked()
+        attendi rescuer_available_cond e riprova
+
+    salva indici assegnati nel record e copia i gemelli digitali
+    emergency_timer_stop(record) perché non sta più aspettando
+    per ogni soccorritore assegnato → update_rescuer_status_locked(EN_ROUTE_TO_SCENE)
+
+    se non è stato assegnato nessun soccorritore:
+        marca COMPLETED, notifica e distruggi il record
+        continua il loop
+
+    marca l'emergenza ASSIGNED, inseriscila in active_list_add_locked()
+
+    calcola travel_time massimo con compute_travel_time_seconds()
+    simula il viaggio dormendo ogni secondo e controllando shutdown/preemption
+
+    all'arrivo → update_rescuer_position_locked() e update_rescuer_status_locked(ON_SCENE)
+    marca l'emergenza IN_PROGRESS e gestisci il tempo di intervento decrementando `manage_time_remaining`
+
+    a fine intervento:
+        calcola il rientro per ciascun soccorritore, imposta return_available_at
+        update_rescuer_status_locked(RETURNING_TO_BASE)
+        marca l'emergenza COMPLETED, notifica e rimuovi con active_list_remove_index_locked()
+        distruggi il record
+
+    in caso di shutdown/preemption → vai a worker_cleanup
+
+worker_cleanup:
+    se shutdown: riporta ogni soccorritore a IDLE, rimuovi dall'active list e distruggi il record
+    altrimenti (preemption): requeue_preempted_emergency_locked(record) e lascia il record in attesa
+```
+
+#### Funzioni richiamate dal worker
+
+* `waiting_queue_pop_front_locked(state)`
+
+  ```
+  se la coda è vuota → restituisci NULL
+  record ← primo elemento
+  shift a sinistra gli elementi rimanenti
+  decrementa waiting_count e restituisci record
+  ```
+
+* `waiting_queue_insert_locked(state, record)`
+
+  ```
+  garantisci capacità con ensure_capacity()
+  trova la posizione mantenendo l'ordinamento per priority_score (decrescente)
+  sposta gli elementi verso destra e inserisci il record
+  aggiorna waiting_count
+  ```
+
+* `try_allocate_rescuers_locked(state, record, out_indices, out_count)`
+
+  ```
+  calcola il numero totale di soccorritori richiesti
+  per ogni richiesta (tipo, quantità):
+      seleziona l'istanza IDLE/RETURNING_TO_BASE compatibile più vicina
+      se RETURNING_TO_BASE e non ancora libera → aggiungi il delta return_available_at - now alla distanza
+      evita duplicati nella selezione corrente
+      se non esiste un candidato per la richiesta → fallisci
+  se tutte le richieste sono soddisfatte → restituisci gli indici selezionati in out_indices/out_count
+  ```
+
+* `attempt_preemption_locked(state, target, out_indices, out_count)`
+
+  ```
+  ripeti:
+      se try_allocate_rescuers_locked() riesce → ritorna true
+      scegli tra le emergenze attive quella con priorità effettiva più bassa
+          (solo se ha soccorritori EN_ROUTE_TO_SCENE/ON_SCENE e non è già preempted)
+      imposta return_available_at = now per i suoi soccorritori e passali a RETURNING_TO_BASE
+      libera indici, svuota rescuers_dt e marca l'emergenza PAUSED + preempted
+      aggiorna priority_score e notifica le condizioni
+      se nessuna emergenza è idonea → restituisci false
+  ```
+
+* `active_list_add_locked(state, record)` / `active_list_remove_index_locked(state, idx)`
+
+  ```
+  add: assicurati della capacità, inserisci il puntatore al fondo dell'array `active_emergencies`,
+       restituisci l'indice inserito oppure (size_t)-1 in caso di errore.
+  remove: rimuovi l'elemento in posizione idx facendo memmove a sinistra e decrementando active_count.
+  ```
+
+* `compute_travel_time_seconds(rescuer, target_x, target_y)`
+
+  ```
+  distanza ← |rescuer.x - target_x| + |rescuer.y - target_y|
+  speed ← max(1, rescuer.type.speed)
+  time ← ceil(distanza / speed)
+  restituisci almeno 1 secondo
+  ```
+
+* `update_rescuer_status_locked(state, index, new_status, emergency_name)`
+
+  ```
+  leggi il twin alla posizione index
+  aggiorna `status` e, se esce da RETURNING_TO_BASE, azzera return_available_at
+  logga la transizione tramite log_rescuer_transition()
+  ```
+
+* `update_rescuer_position_locked(state, index, x, y)`
+
+  ```
+  aggiorna le coordinate del twin nel pool globale
+  ```
+
+* `emergency_timer_stop(record)`
+
+  ```
+  resetta timer_started_at, deadline ed elapsed_timer_seconds perché l'emergenza non è più in attesa
+  ```
+
+* `requeue_preempted_emergency_locked(state, record)`
+
+  ```
+  rimuovi il record dalla active_list se presente
+  libera gli indici assegnati e i rescuers_dt
+  riavvia il timer (emergency_timer_start)
+  ricalcola la priority_score con update_record_priority_locked()
+  reinserisci nella waiting_queue e segnala emergency_available_cond
+  ```
 
 Dividendo $d$ per la velocità del soccorritore si ottiene un’approssimazione del tempo di percorrenza.
 

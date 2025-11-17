@@ -15,13 +15,69 @@
 #define RUNTIME_DEFAULT_WORKERS 2
 #endif
 
+#define RUNTIME_PRIORITY_LEVELS 3
+#define RUNTIME_AGING_MAX_PRIORITY 1
+#define RUNTIME_DEFAULT_TIMEOUT_LOW 180
+#define RUNTIME_DEFAULT_TIMEOUT_MEDIUM 120
+#define RUNTIME_DEFAULT_TIMEOUT_HIGH 60
+#define RUNTIME_DEFAULT_AGING_START 90
+#define RUNTIME_DEFAULT_AGING_STEP 30
+
+static unsigned int get_priority_timeout_seconds(const runtime_state_t* state, short priority) {
+    if (!state) {
+        return 0;
+    }
+
+    if (priority < 0 || priority >= (short)RUNTIME_PRIORITY_LEVELS) {
+        priority = 0;
+    }
+
+    return state->priority_timeouts[(size_t)priority];
+}
+
+static short emergency_effective_priority(const emergency_record_t* record) {
+    if (!record) {
+        return 0;
+    }
+
+    if (record->emergency.dynamic_priority < 0) {
+        return record->emergency.type.priority;
+    }
+
+    return record->emergency.dynamic_priority;
+}
+
+static void emergency_timer_start(const runtime_state_t* state, emergency_record_t* record) {
+    if (!state || !record) {
+        return;
+    }
+
+    time_t now = time(NULL);
+    record->emergency.timer_started_at = now;
+    record->emergency.elapsed_timer_seconds = 0;
+    unsigned int timeout = get_priority_timeout_seconds(state, emergency_effective_priority(record));
+    if (timeout > 0 && now != (time_t)-1) {
+        record->emergency.deadline = now + (time_t)timeout;
+    } else {
+        record->emergency.deadline = 0;
+    }
+}
+
+static void emergency_timer_stop(emergency_record_t* record) {
+    if (!record) {
+        return;
+    }
+
+    record->emergency.timer_started_at = 0;
+    record->emergency.deadline = 0;
+    record->emergency.elapsed_timer_seconds = 0;
+}
+
 static void emergency_record_cleanup(emergency_record_t* record) {
     if (!record) {
         return;
     }
 
-    free(record->assigned_indices);
-    free(record->assigned_indices);
     free(record->assigned_indices);
     record->assigned_indices = NULL;
     record->assigned_count = 0;
@@ -33,6 +89,9 @@ static void emergency_record_cleanup(emergency_record_t* record) {
     record->manage_time_total = 0;
     record->manage_time_remaining = 0;
     record->preempted = false;
+    record->emergency.timer_started_at = 0;
+    record->emergency.deadline = 0;
+    record->emergency.elapsed_timer_seconds = 0;
 }
 
 static void emergency_record_destroy(emergency_record_t* record) {
@@ -154,7 +213,7 @@ static void update_record_priority_locked(runtime_state_t* state, emergency_reco
         record->min_distance = 1000000;
     }
 
-    int priority = record->emergency.type.priority;
+    int priority = emergency_effective_priority(record);
     record->priority_score = priority * 100000 - record->min_distance;
 }
 
@@ -200,6 +259,117 @@ static emergency_record_t* waiting_queue_pop_front_locked(runtime_state_t* state
     state->waiting_count--;
 
     return record;
+}
+
+static emergency_record_t* waiting_queue_remove_index_locked(runtime_state_t* state, size_t index) {
+    if (!state || index >= state->waiting_count) {
+        return NULL;
+    }
+
+    emergency_record_t* record = state->waiting_queue[index];
+    if (index + 1 < state->waiting_count) {
+        memmove(&state->waiting_queue[index],
+                &state->waiting_queue[index + 1],
+                (state->waiting_count - index - 1) * sizeof(emergency_record_t*));
+    }
+    state->waiting_count--;
+    return record;
+}
+
+static void monitor_returning_rescuers_locked(runtime_state_t* state, time_t now) {
+    if (!state || !state->rescuer_pool) {
+        return;
+    }
+
+    for (size_t i = 0; i < state->rescuer_count; ++i) {
+        rescuer_digital_twin_t* rescuer = &state->rescuer_pool[i];
+        if (rescuer->status != RETURNING_TO_BASE) {
+            continue;
+        }
+        if (rescuer->return_available_at == 0 || now == (time_t)-1) {
+            if (rescuer->type) {
+                update_rescuer_position_locked(state, (int)i, rescuer->type->x, rescuer->type->y);
+            }
+            update_rescuer_status_locked(state, (int)i, IDLE, NULL);
+            pthread_cond_broadcast(&state->rescuer_available_cond);
+            continue;
+        }
+        if (now < rescuer->return_available_at) {
+            continue;
+        }
+        if (rescuer->type) {
+            update_rescuer_position_locked(state, (int)i, rescuer->type->x, rescuer->type->y);
+        }
+        update_rescuer_status_locked(state, (int)i, IDLE, NULL);
+        pthread_cond_broadcast(&state->rescuer_available_cond);
+    }
+}
+
+static void monitor_waiting_queue_locked(runtime_state_t* state, time_t now) {
+    if (!state) {
+        return;
+    }
+
+    size_t idx = 0;
+    while (idx < state->waiting_count) {
+        emergency_record_t* record = state->waiting_queue[idx];
+        if (!record) {
+            ++idx;
+            continue;
+        }
+
+        if (record->emergency.timer_started_at != 0 && record->emergency.deadline != 0 &&
+            now != (time_t)-1 && now >= record->emergency.deadline) {
+            record->emergency.elapsed_timer_seconds =
+                (unsigned int)(now - record->emergency.timer_started_at);
+            emergency_status_t prev = record->emergency.status;
+            record->emergency.status = TIMEOUT;
+            LOG_EMERGENCY_STATUS("RT-TIMEOUT",
+                                 "Emergency '%s' %s -> %s after waiting %u seconds",
+                                 record->emergency.name,
+                                 prev == WAITING ? "WAITING" : prev == PAUSED ? "PAUSED" : "UNKNOWN",
+                                 "TIMEOUT",
+                                 record->emergency.elapsed_timer_seconds);
+            waiting_queue_remove_index_locked(state, idx);
+            pthread_cond_broadcast(&state->progress_cond);
+            emergency_record_destroy(record);
+            continue;
+        }
+
+        short base_priority = record->emergency.type.priority;
+        short effective_priority = emergency_effective_priority(record);
+        if (base_priority == 0 && effective_priority < RUNTIME_AGING_MAX_PRIORITY) {
+            if (record->emergency.timer_started_at == 0) {
+                emergency_timer_start(state, record);
+            }
+            if (record->emergency.timer_started_at != 0 && now != (time_t)-1) {
+                time_t waited = now - record->emergency.timer_started_at;
+                if (waited >= (time_t)state->aging_start_seconds) {
+                    time_t over = waited - (time_t)state->aging_start_seconds;
+                    unsigned int steps = 1;
+                    if (state->aging_step_seconds > 0 && over > 0) {
+                        steps += (unsigned int)(over / state->aging_step_seconds);
+                    }
+                    if (steps > 0) {
+                        record->emergency.dynamic_priority = RUNTIME_AGING_MAX_PRIORITY;
+                        emergency_timer_start(state, record);
+                        update_record_priority_locked(state, record);
+                        waiting_queue_remove_index_locked(state, idx);
+                        waiting_queue_insert_locked(state, record);
+                        LOG_EMERGENCY_STATUS("RT-AGING",
+                                             "Emergency '%s' aged to priority %d after %ld seconds",
+                                             record->emergency.name,
+                                             record->emergency.dynamic_priority,
+                                             (long)waited);
+                        pthread_cond_signal(&state->emergency_available_cond);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        ++idx;
+    }
 }
 
 static size_t active_list_add_locked(runtime_state_t* state, emergency_record_t* record) {
@@ -328,10 +498,12 @@ static void log_rescuer_transition(const rescuer_digital_twin_t* rescuer,
 }
 
 static void* runtime_worker_thread(void* arg);
+static void* runtime_monitor_thread(void* arg);
 
 int runtime_state_init(runtime_state_t* state,
                        const rescuer_digital_twin_t* rescuers,
-                       size_t rescuer_count) {
+                       size_t rescuer_count,
+                       const environment_variable_t* environment) {
     if (!state) {
         return -1;
     }
@@ -373,9 +545,30 @@ int runtime_state_init(runtime_state_t* state,
         memcpy(state->rescuer_pool, rescuers, rescuer_count * sizeof(rescuer_digital_twin_t));
         for (size_t i = 0; i < rescuer_count; ++i) {
             state->rescuer_pool[i].status = IDLE;
+            state->rescuer_pool[i].return_available_at = 0;
         }
     }
     state->rescuer_count = rescuer_count;
+    for (size_t i = 0; i < RUNTIME_PRIORITY_LEVELS; ++i) {
+        unsigned int fallback = (i == 0) ? RUNTIME_DEFAULT_TIMEOUT_LOW
+                                         : (i == 1 ? RUNTIME_DEFAULT_TIMEOUT_MEDIUM
+                                                   : RUNTIME_DEFAULT_TIMEOUT_HIGH);
+        if (environment) {
+            state->priority_timeouts[i] = environment->priority_timeouts[i];
+        }
+        if (state->priority_timeouts[i] == 0) {
+            state->priority_timeouts[i] = fallback;
+        }
+    }
+    state->aging_start_seconds = environment ? environment->aging_start_seconds : RUNTIME_DEFAULT_AGING_START;
+    if (state->aging_start_seconds == 0) {
+        state->aging_start_seconds = RUNTIME_DEFAULT_AGING_START;
+    }
+    state->aging_step_seconds = environment ? environment->aging_step_seconds : RUNTIME_DEFAULT_AGING_STEP;
+    if (state->aging_step_seconds == 0) {
+        state->aging_step_seconds = RUNTIME_DEFAULT_AGING_STEP;
+    }
+    state->monitor_running = 0;
     state->shutdown_requested = 0;
 
     return 0;
@@ -427,6 +620,16 @@ int runtime_state_start_workers(runtime_state_t* state, size_t worker_count) {
         }
     }
 
+    if (pthread_create(&state->monitor_thread, NULL, runtime_monitor_thread, state) != 0) {
+        state->monitor_running = 0;
+        runtime_state_request_shutdown(state);
+        runtime_state_join_workers(state);
+        free(state->workers);
+        state->workers = NULL;
+        return -1;
+    }
+    state->monitor_running = 1;
+
     LOG_SYSTEM("RT-WORKERS", "Runtime dispatcher started with %zu workers", worker_count);
     return 0;
 }
@@ -457,6 +660,11 @@ void runtime_state_join_workers(runtime_state_t* state) {
         state->workers = NULL;
         state->worker_count = 0;
     }
+
+    if (state->monitor_running) {
+        pthread_join(state->monitor_thread, NULL);
+        state->monitor_running = 0;
+    }
 }
 
 static int emergency_record_prepare(emergency_record_t* record,
@@ -473,6 +681,10 @@ static int emergency_record_prepare(emergency_record_t* record,
     record->emergency.x = request->x;
     record->emergency.y = request->y;
     record->emergency.time = request->timestamp;
+    record->emergency.timer_started_at = 0;
+    record->emergency.deadline = 0;
+    record->emergency.elapsed_timer_seconds = 0;
+    record->emergency.dynamic_priority = type->priority;
     record->emergency.rescuer_count = 0;
     record->emergency.rescuers_dt = NULL;
     strncpy(record->emergency.name, request->emergency_name, sizeof(record->emergency.name) - 1);
@@ -494,7 +706,7 @@ static int emergency_record_prepare(emergency_record_t* record,
         record->min_distance = 1000000;
     }
 
-    int priority = type->priority;
+    int priority = emergency_effective_priority(record);
     record->priority_score = priority * 100000 - record->min_distance;
 
     record->manage_time_total = compute_management_time_seconds(record);
@@ -544,6 +756,7 @@ int runtime_state_dispatch_request(runtime_state_t* state,
         return -1;
     }
 
+    emergency_timer_start(state, record);
     waiting_queue_insert_locked(state, record);
     pthread_cond_signal(&state->emergency_available_cond);
     pthread_mutex_unlock(&state->mutex);
@@ -585,6 +798,8 @@ static bool try_allocate_rescuers_locked(runtime_state_t* state,
 
     size_t selection_index = 0;
 
+    time_t now = time(NULL);
+
     for (int req_idx = 0; req_idx < type->rescuers_req_number; ++req_idx) {
         const rescuer_request_t* req = &type->rescuer_requests[req_idx];
         if (!req->type || req->required_count <= 0) {
@@ -596,7 +811,7 @@ static bool try_allocate_rescuers_locked(runtime_state_t* state,
             int best_distance = INT_MAX;
             for (size_t rescuer_idx = 0; rescuer_idx < state->rescuer_count; ++rescuer_idx) {
                 rescuer_digital_twin_t* rescuer = &state->rescuer_pool[rescuer_idx];
-                if (rescuer->status != IDLE) {
+                if (rescuer->status != IDLE && rescuer->status != RETURNING_TO_BASE) {
                     continue;
                 }
                 if (rescuer->type != req->type) {
@@ -615,6 +830,13 @@ static bool try_allocate_rescuers_locked(runtime_state_t* state,
                 }
 
                 int distance = compute_manhattan_distance(rescuer, record->emergency.x, record->emergency.y);
+                if (rescuer->status == RETURNING_TO_BASE && rescuer->return_available_at > now &&
+                    rescuer->return_available_at != 0) {
+                    time_t delta = rescuer->return_available_at - now;
+                    if (delta > 0) {
+                        distance += (int)delta;
+                    }
+                }
                 if (distance < best_distance) {
                     best_distance = distance;
                     best_index = (int)rescuer_idx;
@@ -643,7 +865,7 @@ static bool attempt_preemption_locked(runtime_state_t* state,
         return false;
     }
 
-    short target_priority = target->emergency.type.priority;
+    short target_priority = emergency_effective_priority(target);
 
     while (true) {
         if (try_allocate_rescuers_locked(state, target, out_indices, out_count)) {
@@ -663,7 +885,7 @@ static bool attempt_preemption_locked(runtime_state_t* state,
                 continue;
             }
 
-            short candidate_priority = candidate->emergency.type.priority;
+            short candidate_priority = emergency_effective_priority(candidate);
             if (candidate_priority >= target_priority) {
                 continue;
             }
@@ -691,7 +913,7 @@ static bool attempt_preemption_locked(runtime_state_t* state,
                 continue;
             }
 
-            short best_priority = best_candidate->emergency.type.priority;
+            short best_priority = emergency_effective_priority(best_candidate);
             if (candidate_priority < best_priority) {
                 best_candidate = candidate;
                 best_index = i;
@@ -709,13 +931,17 @@ static bool attempt_preemption_locked(runtime_state_t* state,
             return false;
         }
 
+        time_t now = time(NULL);
         for (size_t j = 0; j < best_candidate->assigned_count; ++j) {
             int idx = best_candidate->assigned_indices[j];
             if (idx < 0 || (size_t)idx >= state->rescuer_count) {
                 continue;
             }
-            update_rescuer_status_locked(state, idx, IDLE, best_candidate->emergency.name);
+            rescuer_digital_twin_t* rescuer = &state->rescuer_pool[idx];
+            rescuer->return_available_at = now;
+            update_rescuer_status_locked(state, idx, RETURNING_TO_BASE, best_candidate->emergency.name);
         }
+        pthread_cond_broadcast(&state->rescuer_available_cond);
 
         free(best_candidate->assigned_indices);
         best_candidate->assigned_indices = NULL;
@@ -765,6 +991,7 @@ static void requeue_preempted_emergency_locked(runtime_state_t* state,
     record->assigned_count = 0;
     update_record_priority_locked(state, record);
     record->preempted = false;
+    emergency_timer_start(state, record);
     waiting_queue_insert_locked(state, record);
     pthread_cond_signal(&state->emergency_available_cond);
 }
@@ -780,6 +1007,9 @@ static void update_rescuer_status_locked(runtime_state_t* state,
     rescuer_digital_twin_t* rescuer = &state->rescuer_pool[index];
     rescuer_status_t old_status = rescuer->status;
     rescuer->status = new_status;
+    if (new_status != RETURNING_TO_BASE) {
+        rescuer->return_available_at = 0;
+    }
     log_rescuer_transition(rescuer, old_status, new_status, emergency_name);
 }
 
@@ -789,6 +1019,28 @@ static void update_rescuer_position_locked(runtime_state_t* state, int index, in
     }
     state->rescuer_pool[index].x = x;
     state->rescuer_pool[index].y = y;
+}
+
+static void* runtime_monitor_thread(void* arg) {
+    runtime_state_t* state = (runtime_state_t*)arg;
+    if (!state) {
+        return NULL;
+    }
+
+    while (true) {
+        pthread_mutex_lock(&state->mutex);
+        if (state->shutdown_requested) {
+            pthread_mutex_unlock(&state->mutex);
+            break;
+        }
+        time_t now = time(NULL);
+        monitor_waiting_queue_locked(state, now);
+        monitor_returning_rescuers_locked(state, now);
+        pthread_mutex_unlock(&state->mutex);
+        sleep(1);
+    }
+
+    return NULL;
 }
 
 static void* runtime_worker_thread(void* arg) {
@@ -836,6 +1088,8 @@ static void* runtime_worker_thread(void* arg) {
             record->emergency.rescuers_dt =
                 calloc((size_t)assigned_count, sizeof(rescuer_digital_twin_t));
         }
+
+        emergency_timer_stop(record);
 
         for (size_t i = 0; i < assigned_count; ++i) {
             int idx = assigned_indices[i];
@@ -952,32 +1206,23 @@ static void* runtime_worker_thread(void* arg) {
         }
         for (size_t i = 0; i < record->assigned_count; ++i) {
             int idx = record->assigned_indices[i];
-            update_rescuer_status_locked(state, idx, RETURNING_TO_BASE, record->emergency.name);
-        }
-        pthread_mutex_unlock(&state->mutex);
-
-        for (unsigned int elapsed = 0; elapsed < travel_time; ++elapsed) {
-            pthread_mutex_lock(&state->mutex);
-            if (state->shutdown_requested || record->preempted || record->assigned_count == 0) {
-                pthread_mutex_unlock(&state->mutex);
-                goto worker_cleanup;
-            }
-            pthread_mutex_unlock(&state->mutex);
-            sleep(1);
-        }
-
-        pthread_mutex_lock(&state->mutex);
-        for (size_t i = 0; i < record->assigned_count; ++i) {
-            int idx = record->assigned_indices[i];
             if (idx < 0 || (size_t)idx >= state->rescuer_count) {
                 continue;
             }
             rescuer_digital_twin_t* rescuer = &state->rescuer_pool[idx];
+            unsigned int return_time = travel_time;
             if (rescuer->type) {
-                update_rescuer_position_locked(state, idx, rescuer->type->x, rescuer->type->y);
+                return_time = compute_travel_time_seconds(rescuer, rescuer->type->x, rescuer->type->y);
             }
-            update_rescuer_status_locked(state, idx, IDLE, record->emergency.name);
+            time_t now = time(NULL);
+            if (now != (time_t)-1) {
+                rescuer->return_available_at = now + (time_t)return_time;
+            } else {
+                rescuer->return_available_at = 0;
+            }
+            update_rescuer_status_locked(state, idx, RETURNING_TO_BASE, record->emergency.name);
         }
+        pthread_cond_broadcast(&state->rescuer_available_cond);
         previous_status = record->emergency.status;
         record->emergency.status = COMPLETED;
         LOG_EMERGENCY_STATUS("RT-COMPLETED",

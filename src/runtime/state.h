@@ -8,6 +8,7 @@
 #include "../../emergency.h"
 #include "../../emergency_types.h"
 #include "../../rescuers.h"
+#include "../../parse_env.h"
 
 typedef struct emergency_record_t {
     emergency_t emergency;
@@ -42,12 +43,20 @@ typedef struct runtime_state_t {
     pthread_t* workers;
     size_t worker_count;
 
+    pthread_t monitor_thread;
+    int monitor_running;
+
+    unsigned int priority_timeouts[3];
+    unsigned int aging_start_seconds;
+    unsigned int aging_step_seconds;
+
     int shutdown_requested;
 } runtime_state_t;
 
 int runtime_state_init(runtime_state_t* state,
                        const rescuer_digital_twin_t* rescuers,
-                       size_t rescuer_count);
+                       size_t rescuer_count,
+                       const environment_variable_t* environment);
 
 void runtime_state_destroy(runtime_state_t* state);
 

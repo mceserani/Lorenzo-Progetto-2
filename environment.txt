@@ -1,3 +1,8 @@
 queue=emergenze123456
 height=300
 width=400
+priority0_timeout=180
+priority1_timeout=120
+priority2_timeout=60
+aging_start=90
+aging_step=30
