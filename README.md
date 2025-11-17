@@ -23,6 +23,13 @@ L’obiettivo del sistema è di assegnare i soccorritori appropriati a ciascuna 
 I tipi di emergenze e i soccorritori disponibili sono delineati tramite file di configurazione specifici: `rescuers.conf` e `emergency_types.conf`.
 
 La dimensione dell’ambiente è definita in un terzo file di configurazione, `env.conf`.
+Oltre alle dimensioni e al nome della message queue, il file supporta anche le seguenti chiavi opzionali per la gestione delle
+scadenze e dell'aging:
+
+* `priority0_timeout`, `priority1_timeout`, `priority2_timeout`: tempo massimo (in secondi) che un'emergenza di quella
+  priorità può trascorrere negli stati `WAITING`/`PAUSED` prima di essere marcata come `TIMEOUT`.
+* `aging_start` e `aging_step`: soglie temporali (in secondi) che definiscono quando le emergenze a bassa priorità iniziano a
+  ricevere incrementi dinamici di priorità (fino alla priorità media) per evitare starvation.
 
 Si può assumere che il contenuto di questi file non cambi e richieda di essere letto solo durante l’avvio del programma.
 

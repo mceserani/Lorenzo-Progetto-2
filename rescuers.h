@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include <time.h>
 
 typedef struct rescuer_type_t  {
     char* rescuer_type_name;
@@ -19,6 +20,7 @@ typedef struct rescuer_digital_twin_t {
     int y;
     rescuer_type_t* type;
     rescuer_status_t status;
+    time_t return_available_at;
 } rescuer_digital_twin_t;
 
 void free_rescuer_types(rescuer_type_t* types);

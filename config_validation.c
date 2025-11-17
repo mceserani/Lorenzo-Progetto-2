@@ -24,6 +24,29 @@ static int validate_grid_size(const environment_variable_t* env) {
     return 0;
 }
 
+static int validate_environment_timeouts(const environment_variable_t* env) {
+    for (size_t i = 0; i < 3; ++i) {
+        if (env->priority_timeouts[i] == 0) {
+            fprintf(stderr, "Priority timeout %zu cannot be zero.\n", i);
+            LOG_CONFIGURATION("CFG-TIMEOUT-INVALID",
+                              "Priority timeout for level %zu is zero (array=[%u,%u,%u])",
+                              i,
+                              env->priority_timeouts[0],
+                              env->priority_timeouts[1],
+                              env->priority_timeouts[2]);
+            return -1;
+        }
+    }
+
+    if (env->aging_step_seconds == 0) {
+        fprintf(stderr, "Aging step cannot be zero.\n");
+        LOG_CONFIGURATION("CFG-AGING-STEP-INVALID", "Aging step cannot be zero");
+        return -1;
+    }
+
+    return 0;
+}
+
 static int validate_rescuer_positions(const app_context_t* ctx) {
     for (size_t i = 0; i < ctx->rescuer_type_count; ++i) {
         const rescuer_type_t* type = &ctx->rescuer_types[i];
@@ -63,6 +86,10 @@ int validate_configuration(const app_context_t* ctx) {
     }
 
     if (validate_grid_size(&ctx->environment) != 0) {
+        return -1;
+    }
+
+    if (validate_environment_timeouts(&ctx->environment) != 0) {
         return -1;
     }
 

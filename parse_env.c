@@ -7,6 +7,12 @@
 #include "parse_env.h"
 #include "logging.h"
 
+#define DEFAULT_PRIORITY_TIMEOUT_LOW 180
+#define DEFAULT_PRIORITY_TIMEOUT_MEDIUM 120
+#define DEFAULT_PRIORITY_TIMEOUT_HIGH 60
+#define DEFAULT_AGING_START 90
+#define DEFAULT_AGING_STEP 30
+
 int parse_environment_variables(const char* path, environment_variable_t* env_vars) {
     if (!env_vars || !path) {
         return -1;
@@ -14,6 +20,11 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
 
     env_vars->height = 0;
     env_vars->width = 0;
+    env_vars->priority_timeouts[0] = DEFAULT_PRIORITY_TIMEOUT_LOW;
+    env_vars->priority_timeouts[1] = DEFAULT_PRIORITY_TIMEOUT_MEDIUM;
+    env_vars->priority_timeouts[2] = DEFAULT_PRIORITY_TIMEOUT_HIGH;
+    env_vars->aging_start_seconds = DEFAULT_AGING_START;
+    env_vars->aging_step_seconds = DEFAULT_AGING_STEP;
     free(env_vars->queue);
     env_vars->queue = NULL;
 
@@ -50,6 +61,16 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
                 env_vars->height = atoi(tok_value);
             } else if (strcmp(tok_key, "width") == 0) {
                 env_vars->width = atoi(tok_value);
+            } else if (strcmp(tok_key, "priority0_timeout") == 0) {
+                env_vars->priority_timeouts[0] = (unsigned int)atoi(tok_value);
+            } else if (strcmp(tok_key, "priority1_timeout") == 0) {
+                env_vars->priority_timeouts[1] = (unsigned int)atoi(tok_value);
+            } else if (strcmp(tok_key, "priority2_timeout") == 0) {
+                env_vars->priority_timeouts[2] = (unsigned int)atoi(tok_value);
+            } else if (strcmp(tok_key, "aging_start") == 0) {
+                env_vars->aging_start_seconds = (unsigned int)atoi(tok_value);
+            } else if (strcmp(tok_key, "aging_step") == 0) {
+                env_vars->aging_step_seconds = (unsigned int)atoi(tok_value);
             }
         }
     }
@@ -61,7 +82,16 @@ int parse_environment_variables(const char* path, environment_variable_t* env_va
         LOG_FILE_PARSING("ENV-PARSE-MISSING-QUEUE", "Missing queue entry in environment file '%s'", path);
         result = -1;
     } else if (result == 0) {
-        LOG_FILE_PARSING("ENV-PARSE-SUCCESS", "Parsed environment queue='%s' height=%d width=%d", env_vars->queue, env_vars->height, env_vars->width);
+        LOG_FILE_PARSING("ENV-PARSE-SUCCESS",
+                         "Parsed environment queue='%s' height=%d width=%d timeout=[%u,%u,%u] aging_start=%u aging_step=%u",
+                         env_vars->queue,
+                         env_vars->height,
+                         env_vars->width,
+                         env_vars->priority_timeouts[0],
+                         env_vars->priority_timeouts[1],
+                         env_vars->priority_timeouts[2],
+                         env_vars->aging_start_seconds,
+                         env_vars->aging_step_seconds);
     }
 
     return result;
